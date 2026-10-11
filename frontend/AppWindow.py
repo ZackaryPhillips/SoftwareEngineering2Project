@@ -1,60 +1,81 @@
-from tkinter import *
-from tkinter import messagebox, filedialog
 import tkinter as tk
+from tkinter import messagebox, filedialog
+from threading import Thread
 from api import post_bug, get_AI_response
 
+
 class AppWindow:
+    """GUI for a debugging assistant: describe a bug, get an AI diagnosis."""
 
-	text_ai_description = None
-	entry_bug_description = None
+    def __init__(self):
+        root = tk.Tk()
+        root.title("Debugging Application")
+        root.geometry("1400x900")
 
-	def __init__(self):
+        main_frame = tk.Frame(root)
+        main_frame.pack(fill="both", expand=True)
+        main_frame.grid_rowconfigure(0, weight=3)
+        main_frame.grid_rowconfigure(1, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
 
-		root = Tk()
-		root.title("Debugging Application")
-		root.geometry("1400x900")
-		root.maxsize(1500, 900)
-		print("reached tk instantiation")
+        # --- AI response area (read-only) ---
+        ai_response_frame = tk.LabelFrame(main_frame, text="AI Response")
+        ai_response_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        self.text_ai_description = tk.Text(ai_response_frame, width=150, height=30,
+                                           state="disabled", wrap="word")
+        self.text_ai_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
-		main_frame = Frame(root, width=1100, height=850)
-		main_frame.pack(fill="both", expand="yes")
-		print("main_frame created")
+        # --- Bug input area ---
+        bug_description_frame = tk.LabelFrame(main_frame, text="Bug Description")
+        bug_description_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        self.entry_bug_description = tk.Text(bug_description_frame, width=100, height=10,
+                                             wrap="word")
+        self.entry_bug_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
-		ai_response_frame = LabelFrame(main_frame, text="AI Response", width=1000, height=600)
-		ai_response_frame.grid(row=0, column=0, padx=5, pady=5)
-		print("ai_response_frame created")
+        button_frame = tk.Frame(bug_description_frame)
+        button_frame.grid(row=1, column=0, pady=5)
+        tk.Button(button_frame, text="Attach file", command=self.retrieve_file).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Submit bug", command=self.submit_bug).pack(side="left", padx=5)
 
-		self.text_ai_description = Text(ai_response_frame, width=150, height=30)
-		self.text_ai_description.grid(row=0, column=0, padx=5, pady=5)
+        self.attached_file = None
+        root.mainloop()
 
-		bug_description_frame = LabelFrame(main_frame, text="Bug Description", width=900, height=800)
-		bug_description_frame.grid(row=1, column=0, padx=5, pady=5)
-		print("bug_description_frame created")
+    # ---------------- interaction ----------------
 
-		self.entry_bug_description = Text(bug_description_frame, width=100, height=10)
-		self.entry_bug_description.grid(row=0, column=0, padx=5, pady=5)
+    def submit_bug(self):
+        description = self.entry_bug_description.get('1.0', 'end').strip()
+        if not description:
+            messagebox.showwarning("Empty", "Please describe the bug first.")
+            return
 
-		button_bug_description = Button(bug_description_frame, text="submit bug", command=self.submit_bug)
-		button_bug_description.grid(row=1, column=0, padx=5, pady=5)
+        self.entry_bug_description.delete('1.0', 'end')
+        self.load_AI_response("Submitting bug...\n")
 
-		root.mainloop()
+        # Network calls run in a background thread so the UI stays responsive.
+        Thread(target=self._process_bug, args=(description,), daemon=True).start()
 
-	
-	def submit_bug(self):
-		# placeholder for submitBug() implementation
-		print('submit_bug() method invoked')
-		description = self.entry_bug_description.get('1.0', 'end')
-		print(f"{description}")
+    def _process_bug(self, description: str):
+        try:
+            bug_id = post_bug(description)
+            answer = get_AI_response(bug_id)
+        except Exception as e:
+            # tkinter isn't thread-safe: schedule UI update on the main thread
+            self.text_ai_description.after(0, lambda: self.load_AI_response(f"Error: {e}\n"))
+            return
+        self.text_ai_description.after(0, lambda: self.load_AI_response(answer))
 
+    # ---------------- helpers ----------------
 
-		# clear field
-		self.entry_bug_description.delete('0.0', f"{len(description)}.0")
+    def load_AI_response(self, ai_response: str):
+        print('load_AI_response() method invoked')
+        self.text_ai_description.config(state="normal")
+        self.text_ai_description.insert('end', ai_response)
+        self.text_ai_description.see('end')
+        self.text_ai_description.config(state="disabled")
 
-	def load_AI_response(self, ai_response):
-		# placeholder for loadAIReponse() implementation
-		print('load_AI_response() method invoked')
-		self.text_ai_description.insert('1.0', ai_response)
-
-	def retrieve_file(self):
-		# placeholder for retrieve_file() implementation
-		print('retrieve_file() method invoked')
+    def retrieve_file(self):
+        print('retrieve_file() method invoked')
+        path = filedialog.askopenfilename(title="Attach a file to the bug report")
+        if path:
+            self.attached_file = path
+            self.load_AI_response(f"[file attached: {path}]\n")
