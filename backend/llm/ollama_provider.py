@@ -12,7 +12,7 @@ class OllamaProvider(LLMProvider):
         self.model = model
         self.num_ctx = num_ctx
         self.timeout = timeout
-
+    
     def generate(self, prompt: str, json_schema: dict | None = None) -> str:
         payload = {
             "model": self.model,
