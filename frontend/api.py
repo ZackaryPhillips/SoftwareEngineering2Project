@@ -20,5 +20,7 @@ def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 60
         data = resp.json()
         if data.get("status") == "done":
             return data["answer"]
+        if data.get("status") == "error":
+            raise RuntimeError(data.get("error", "The diagnosis could not be completed."))
         time.sleep(poll_interval)
     raise TimeoutError("AI response timed out")

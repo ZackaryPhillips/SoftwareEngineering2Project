@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog
+from queue import Empty, Queue
 from threading import Thread
 from api import post_bug, get_AI_response
 from lib.model import Bug_Report
@@ -59,6 +60,11 @@ class AppWindow:
         tk.Button(button_frame, text="Submit bug", command=self.submit_bug).pack(side="left", padx=5)
 
         self.attached_file = []
+        self.root = root
+        self.ui_updates = Queue()
+        self.history_entries = {}
+        self.submission_count = 0
+        root.after(50, self._process_ui_updates)
         root.mainloop()
 
     # ---------------- interaction ----------------
@@ -72,24 +78,96 @@ class AppWindow:
             messagebox.showwarning("Empty", "Please describe the bug first.")
             return
 
-        self.entry_bug_description.delete('1.0', 'end')
+        self.submission_count += 1
+        history_id = f"submission-{self.submission_count}"
+        description = the_bug.get_bug_description()
+        self.update_history(history_id, description, "Submitting...")
         self.set_status("Submitting bug...")
 
         # Network calls run in a background thread so the UI stays responsive.
-        Thread(target=self._process_bug, args=(the_bug.get_bug_description(), the_bug), daemon=True).start()
+        Thread(
+            target=self._process_bug,
+            args=(description, the_bug, history_id),
+            daemon=True,
+        ).start()
 
-    def _process_bug(self, description: str, the_bug: Bug_Report):
+    def _process_bug(self, description: str, the_bug: Bug_Report, history_id: str):
         try:
             bug_id = post_bug(description)
+        except Exception as e:
+            self.ui_updates.put(
+                lambda error=e: self.finish_failed_submission(
+                    history_id, description, error
+                )
+            )
+            return
+
+        self.ui_updates.put(
+            lambda: self.mark_diagnosis_pending(history_id, description)
+        )
+        try:
             the_bug.set_error_output(get_AI_response(bug_id))
         except Exception as e:
-            # tkinter isn't thread-safe: schedule UI update on the main thread
-            self.text_ai_description.after(0, lambda: self.set_status(f"Error: {e}\n"))
+            self.ui_updates.put(
+                lambda error=e: self.finish_failed_diagnosis(
+                    history_id, description, error
+                )
+            )
             return
-        self.text_ai_description.after(0, lambda: self.load_AI_response(the_bug))
-        self.set_status("AI response successful!")       
+        self.ui_updates.put(
+            lambda: self.finish_submission(the_bug, description, history_id)
+        )
 
     # ---------------- helpers ----------------
+
+    def _process_ui_updates(self):
+        self.root.after(50, self._process_ui_updates)
+        while True:
+            try:
+                update = self.ui_updates.get_nowait()
+            except Empty:
+                break
+            update()
+
+    @staticmethod
+    def _submission_error_message(error: Exception) -> str:
+        return (
+            f"Request failed: {error}\n\n"
+            "Please try a debugging-focused report that includes:\n"
+            "- What you expected to happen\n"
+            "- What actually happened\n"
+            "- Steps or input to reproduce the problem\n"
+            "- The relevant code and full error message or traceback"
+        )
+
+    def finish_failed_submission(
+        self, history_id: str, description: str, error: Exception
+    ):
+        self.update_history(history_id, description, f"Submission failed: {error}")
+        self.show_submission_error(self._submission_error_message(error))
+
+    def show_submission_error(self, message: str):
+        self.set_status("Request failed. Your description was kept so you can edit and retry.")
+        messagebox.showerror("Request failed", message)
+
+    def mark_diagnosis_pending(self, history_id: str, description: str):
+        self.update_history(history_id, description, "Diagnosis pending...")
+        self.set_status("Report submitted; waiting for AI diagnosis...")
+
+    def finish_failed_diagnosis(
+        self, history_id: str, description: str, error: Exception
+    ):
+        self.update_history(history_id, description, f"Diagnosis failed: {error}")
+        self.show_submission_error(self._submission_error_message(error))
+
+    def finish_submission(
+        self, the_bug: Bug_Report, description: str, history_id: str
+    ):
+        self.update_history(history_id, description, the_bug.get_error_output())
+        self.load_AI_response(the_bug)
+        if self.entry_bug_description.get('1.0', 'end').strip() == description:
+            self.entry_bug_description.delete('1.0', 'end')
+        self.set_status("AI response successful!")
 
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
@@ -98,7 +176,6 @@ class AppWindow:
         self.text_ai_description.config(state="normal")
         self.text_ai_description.delete('1.0', 'end')
         self.text_ai_description.config(state="disabled")
-        self.add_history(the_bug.get_report())
 
         self.text_ai_description.config(state="normal")
         self.text_ai_description.insert('end', the_bug.get_error_output())
@@ -118,9 +195,14 @@ class AppWindow:
             print(self.attached_file)
 
     # sprint 3
-    def add_history(self, ai_response: str):
+    def update_history(self, bug_id: str, description: str, ai_response: str):
+        self.history_entries[bug_id] = (
+            f"Bug Description:\n{description}\n\n"
+            f"AI Response:\n{ai_response}\n\n"
+        )
         self.text_ai_history.config(state="normal")
-        self.text_ai_history.insert('end', ai_response)
+        self.text_ai_history.delete('1.0', 'end')
+        self.text_ai_history.insert('end', ''.join(self.history_entries.values()))
         self.text_ai_history.see('end')
         self.text_ai_history.config(state="disabled")
 
