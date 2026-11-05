@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 from queue import Empty, Queue
 from threading import Thread
-from api import post_bug, get_AI_response
+from api import post_bug, get_AI_response, post_decision, relative_names
 from lib.model import Bug_Report
 
 class AppWindow:
@@ -34,6 +34,16 @@ class AppWindow:
                                            state="disabled", wrap="word")
         self.text_status_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
+        # Enabled once a diagnosis is shown; the developer makes the final call on the fix.
+        decision_frame = tk.Frame(ai_response_frame)
+        decision_frame.grid(row=2, column=0, pady=5)
+        self.button_accept = tk.Button(decision_frame, text="Accept fix", state="disabled",
+                                       command=lambda: self.decide("accept"))
+        self.button_accept.pack(side="left", padx=5)
+        self.button_reject = tk.Button(decision_frame, text="Reject fix", state="disabled",
+                                       command=lambda: self.decide("reject"))
+        self.button_reject.pack(side="left", padx=5)
+
         # -- AI response history (read-only) ---
         ai_history_frame = tk.LabelFrame(main_frame, text="AI History")
         ai_history_frame.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
@@ -50,10 +60,21 @@ class AppWindow:
 
         file_frame = tk.LabelFrame(main_frame, text="File Information")
         file_frame.grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
-        self.text_file_name = tk.Text(file_frame, width=50, height= 2, 
-                                               state="disabled", wrap="word")
-        self.text_file_name.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-        tk.Button(file_frame, text="Attach file", command=self.retrieve_file).grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        file_frame.grid_rowconfigure(1, weight=1)
+        file_frame.grid_columnconfigure(0, weight=1)
+        self.label_file_count = tk.Label(file_frame, anchor="w")
+        self.label_file_count.grid(row=0, column=0, columnspan=2, padx=5, sticky="ew")
+        self.list_files = tk.Listbox(file_frame, width=50, height=6, selectmode="extended",
+                                     activestyle="none")
+        self.list_files.grid(row=1, column=0, padx=(5, 0), pady=5, sticky="nsew")
+        file_scrollbar = tk.Scrollbar(file_frame, command=self.list_files.yview)
+        file_scrollbar.grid(row=1, column=1, padx=(0, 5), pady=5, sticky="ns")
+        self.list_files.config(yscrollcommand=file_scrollbar.set)
+        file_button_frame = tk.Frame(file_frame)
+        file_button_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        tk.Button(file_button_frame, text="Attach files", command=self.retrieve_file).pack(side="left", padx=5)
+        tk.Button(file_button_frame, text="Remove selected", command=self.remove_selected_files).pack(side="left", padx=5)
+        tk.Button(file_button_frame, text="Clear files", command=self.clear_files).pack(side="left", padx=5)
 
         button_frame = tk.Frame(bug_description_frame)
         button_frame.grid(row=1, column=0, pady=5)        
@@ -64,6 +85,9 @@ class AppWindow:
         self.ui_updates = Queue()
         self.history_entries = {}
         self.submission_count = 0
+        self.current_bug = None         # the bug whose diagnosis is on screen
+        self.current_history_id = None
+        self.refresh_file_list()
         root.after(50, self._process_ui_updates)
         root.mainloop()
 
@@ -93,7 +117,7 @@ class AppWindow:
 
     def _process_bug(self, description: str, the_bug: Bug_Report, history_id: str):
         try:
-            bug_id = post_bug(description)
+            the_bug.set_bug_id(post_bug(the_bug))
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_submission(
@@ -106,7 +130,7 @@ class AppWindow:
             lambda: self.mark_diagnosis_pending(history_id, description)
         )
         try:
-            the_bug.set_error_output(get_AI_response(bug_id))
+            the_bug.set_ai_response(get_AI_response(the_bug.get_bug_id()))
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_diagnosis(
@@ -116,6 +140,28 @@ class AppWindow:
             return
         self.ui_updates.put(
             lambda: self.finish_submission(the_bug, description, history_id)
+        )
+
+    def decide(self, decision: str):
+        the_bug, history_id = self.current_bug, self.current_history_id
+        self.set_decision_buttons("disabled")
+        self.set_status("Recording your decision...")
+        Thread(
+            target=self._process_decision,
+            args=(the_bug, history_id, decision),
+            daemon=True,
+        ).start()
+
+    def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+        try:
+            post_decision(the_bug.get_bug_id(), decision)
+        except Exception as e:
+            self.ui_updates.put(
+                lambda error=e: self.finish_failed_decision(the_bug, error)
+            )
+            return
+        self.ui_updates.put(
+            lambda: self.finish_decision(the_bug, history_id, decision)
         )
 
     # ---------------- helpers ----------------
@@ -163,11 +209,33 @@ class AppWindow:
     def finish_submission(
         self, the_bug: Bug_Report, description: str, history_id: str
     ):
-        self.update_history(history_id, description, the_bug.get_error_output())
+        self.update_history(history_id, description, the_bug.get_ai_response())
         self.load_AI_response(the_bug)
         if self.entry_bug_description.get('1.0', 'end').strip() == description:
             self.entry_bug_description.delete('1.0', 'end')
-        self.set_status("AI response successful!")
+        if self.attached_file == the_bug.get_files():
+            self.clear_files()
+        self.current_bug, self.current_history_id = the_bug, history_id
+        self.set_decision_buttons("normal")
+        self.set_status("AI response successful! Review the suggested fix, then accept or reject it.")
+
+    def finish_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+        the_bug.set_decision(decision)
+        label = "Accepted" if decision == "accept" else "Rejected"
+        self.update_history(history_id, the_bug.get_bug_description(),
+                            the_bug.get_ai_response(), decision=label)
+        self.set_status(f"Suggested fix {label.lower()}.")
+
+    def finish_failed_decision(self, the_bug: Bug_Report, error: Exception):
+        # Let the user retry, unless a newer diagnosis has replaced this one on screen.
+        if the_bug is self.current_bug:
+            self.set_decision_buttons("normal")
+        self.set_status("Your decision could not be saved. Please try again.")
+        messagebox.showerror("Decision not saved", f"Request failed: {error}")
+
+    def set_decision_buttons(self, state: str):
+        self.button_accept.config(state=state)
+        self.button_reject.config(state=state)
 
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
@@ -178,31 +246,51 @@ class AppWindow:
         self.text_ai_description.config(state="disabled")
 
         self.text_ai_description.config(state="normal")
-        self.text_ai_description.insert('end', the_bug.get_error_output())
+        self.text_ai_description.insert('end', the_bug.get_ai_response())
         self.text_ai_description.see('end')
         self.text_ai_description.config(state="disabled")
 
     def retrieve_file(self):
         print('retrieve_file() method invoked')
-        path = filedialog.askopenfilename(title="Attach a file to the bug report")
-        if path:
-            self.attached_file.append(path)
-            self.text_file_name.config(state="normal")
-            self.text_file_name.insert('end', f"{path}\n")
-            self.text_file_name.see('end')
-            self.text_file_name.config(state="disabled")
+        paths = filedialog.askopenfilenames(title="Attach source files to the bug report")
+        new_paths = [p for p in paths if p not in self.attached_file]
+        if new_paths:
+            self.attached_file.extend(new_paths)
+            self.refresh_file_list()
+            self.list_files.see('end')
 
             print(self.attached_file)
 
+    def remove_selected_files(self):
+        selected = set(self.list_files.curselection())
+        self.attached_file = [p for i, p in enumerate(self.attached_file) if i not in selected]
+        self.refresh_file_list()
+
+    def clear_files(self):
+        self.attached_file = []
+        self.refresh_file_list()
+
+    def refresh_file_list(self):
+        # Names are shown the same way they're sent to the AI.
+        self.list_files.delete(0, 'end')
+        for name in relative_names(self.attached_file):
+            self.list_files.insert('end', name)
+        count = len(self.attached_file)
+        self.label_file_count.config(
+            text=f"{count} file{'s' if count != 1 else ''} attached" if count else "No files attached"
+        )
+
     # sprint 3
-    def update_history(self, bug_id: str, description: str, ai_response: str):
+    def update_history(self, bug_id: str, description: str, ai_response: str, decision: str = ""):
         self.history_entries[bug_id] = (
             f"Bug Description:\n{description}\n\n"
             f"AI Response:\n{ai_response}\n\n"
+            + (f"Decision: {decision}\n\n" if decision else "")
         )
         self.text_ai_history.config(state="normal")
         self.text_ai_history.delete('1.0', 'end')
-        self.text_ai_history.insert('end', ''.join(self.history_entries.values()))
+        separator = "─" * 50 + "\n\n"
+        self.text_ai_history.insert('end', separator.join(self.history_entries.values()))
         self.text_ai_history.see('end')
         self.text_ai_history.config(state="disabled")
 
