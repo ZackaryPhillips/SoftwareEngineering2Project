@@ -53,7 +53,10 @@ class AppWindow:
         self.text_file_name = tk.Text(file_frame, width=50, height= 2, 
                                                state="disabled", wrap="word")
         self.text_file_name.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-        tk.Button(file_frame, text="Attach file", command=self.retrieve_file).grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        file_button_frame = tk.Frame(file_frame)
+        file_button_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        tk.Button(file_button_frame, text="Attach files", command=self.retrieve_file).pack(side="left", padx=5)
+        tk.Button(file_button_frame, text="Clear files", command=self.clear_files).pack(side="left", padx=5)
 
         button_frame = tk.Frame(bug_description_frame)
         button_frame.grid(row=1, column=0, pady=5)        
@@ -93,7 +96,7 @@ class AppWindow:
 
     def _process_bug(self, description: str, the_bug: Bug_Report, history_id: str):
         try:
-            bug_id = post_bug(description)
+            the_bug.set_bug_id(post_bug(the_bug))
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_submission(
@@ -106,7 +109,7 @@ class AppWindow:
             lambda: self.mark_diagnosis_pending(history_id, description)
         )
         try:
-            the_bug.set_error_output(get_AI_response(bug_id))
+            the_bug.set_ai_response(get_AI_response(the_bug.get_bug_id()))
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_diagnosis(
@@ -163,10 +166,12 @@ class AppWindow:
     def finish_submission(
         self, the_bug: Bug_Report, description: str, history_id: str
     ):
-        self.update_history(history_id, description, the_bug.get_error_output())
+        self.update_history(history_id, description, the_bug.get_ai_response())
         self.load_AI_response(the_bug)
         if self.entry_bug_description.get('1.0', 'end').strip() == description:
             self.entry_bug_description.delete('1.0', 'end')
+        if self.attached_file == the_bug.get_files():
+            self.clear_files()
         self.set_status("AI response successful!")
 
     def load_AI_response(self, the_bug: Bug_Report):
@@ -178,21 +183,28 @@ class AppWindow:
         self.text_ai_description.config(state="disabled")
 
         self.text_ai_description.config(state="normal")
-        self.text_ai_description.insert('end', the_bug.get_error_output())
+        self.text_ai_description.insert('end', the_bug.get_ai_response())
         self.text_ai_description.see('end')
         self.text_ai_description.config(state="disabled")
 
     def retrieve_file(self):
         print('retrieve_file() method invoked')
-        path = filedialog.askopenfilename(title="Attach a file to the bug report")
-        if path:
-            self.attached_file.append(path)
+        paths = filedialog.askopenfilenames(title="Attach source files to the bug report")
+        new_paths = [p for p in paths if p not in self.attached_file]
+        if new_paths:
+            self.attached_file.extend(new_paths)
             self.text_file_name.config(state="normal")
-            self.text_file_name.insert('end', f"{path}\n")
+            self.text_file_name.insert('end', ''.join(f"{p}\n" for p in new_paths))
             self.text_file_name.see('end')
             self.text_file_name.config(state="disabled")
 
             print(self.attached_file)
+
+    def clear_files(self):
+        self.attached_file = []
+        self.text_file_name.config(state="normal")
+        self.text_file_name.delete('1.0', 'end')
+        self.text_file_name.config(state="disabled")
 
     # sprint 3
     def update_history(self, bug_id: str, description: str, ai_response: str):
