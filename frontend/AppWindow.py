@@ -289,7 +289,8 @@ class AppWindow:
         )
         self.text_ai_history.config(state="normal")
         self.text_ai_history.delete('1.0', 'end')
-        self.text_ai_history.insert('end', ''.join(self.history_entries.values()))
+        separator = "─" * 50 + "\n\n"
+        self.text_ai_history.insert('end', separator.join(self.history_entries.values()))
         self.text_ai_history.see('end')
         self.text_ai_history.config(state="disabled")
 
