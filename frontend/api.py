@@ -4,11 +4,10 @@ import requests
 
 API_BASE = "http://localhost:8000"  # adjust to your backend
 
-def _read_files(paths: list) -> list:
-    """Load attached files as [{path, content}] for the backend.
+def relative_names(paths: list) -> list:
+    """Name each file relative to the files' shared folder, e.g. "utils/math.py".
 
-    Paths are sent relative to the files' shared folder, so the AI sees
-    e.g. "utils/math.py" and local folder names aren't sent.
+    This is what the AI sees (and what the GUI lists), so local folder names aren't sent.
     """
     if not paths:
         return []
@@ -16,15 +15,19 @@ def _read_files(paths: list) -> list:
         base = os.path.dirname(paths[0]) if len(paths) == 1 else os.path.commonpath(paths)
     except ValueError:  # files on different drives share no folder
         base = None
+    names = [os.path.relpath(p, base) if base else os.path.basename(p) for p in paths]
+    return [n.replace("\\", "/") for n in names]
+
+def _read_files(paths: list) -> list:
+    """Load attached files as [{path, content}] for the backend."""
     files = []
-    for path in paths:
+    for path, name in zip(paths, relative_names(paths)):
         try:
             with open(path, encoding="utf-8") as f:
                 content = f.read()
         except UnicodeDecodeError:
             raise ValueError(f"{os.path.basename(path)} is not a text file.")
-        name = os.path.relpath(path, base) if base else os.path.basename(path)
-        files.append({"path": name.replace("\\", "/"), "content": content})
+        files.append({"path": name, "content": content})
     return files
 
 def _raise_for_status(resp):

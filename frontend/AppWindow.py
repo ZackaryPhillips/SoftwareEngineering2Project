@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 from queue import Empty, Queue
 from threading import Thread
-from api import post_bug, get_AI_response, post_decision
+from api import post_bug, get_AI_response, post_decision, relative_names
 from lib.model import Bug_Report
 
 class AppWindow:
@@ -60,12 +60,20 @@ class AppWindow:
 
         file_frame = tk.LabelFrame(main_frame, text="File Information")
         file_frame.grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
-        self.text_file_name = tk.Text(file_frame, width=50, height= 2, 
-                                               state="disabled", wrap="word")
-        self.text_file_name.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        file_frame.grid_rowconfigure(1, weight=1)
+        file_frame.grid_columnconfigure(0, weight=1)
+        self.label_file_count = tk.Label(file_frame, anchor="w")
+        self.label_file_count.grid(row=0, column=0, columnspan=2, padx=5, sticky="ew")
+        self.list_files = tk.Listbox(file_frame, width=50, height=6, selectmode="extended",
+                                     activestyle="none")
+        self.list_files.grid(row=1, column=0, padx=(5, 0), pady=5, sticky="nsew")
+        file_scrollbar = tk.Scrollbar(file_frame, command=self.list_files.yview)
+        file_scrollbar.grid(row=1, column=1, padx=(0, 5), pady=5, sticky="ns")
+        self.list_files.config(yscrollcommand=file_scrollbar.set)
         file_button_frame = tk.Frame(file_frame)
-        file_button_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        file_button_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="w")
         tk.Button(file_button_frame, text="Attach files", command=self.retrieve_file).pack(side="left", padx=5)
+        tk.Button(file_button_frame, text="Remove selected", command=self.remove_selected_files).pack(side="left", padx=5)
         tk.Button(file_button_frame, text="Clear files", command=self.clear_files).pack(side="left", padx=5)
 
         button_frame = tk.Frame(bug_description_frame)
@@ -79,6 +87,7 @@ class AppWindow:
         self.submission_count = 0
         self.current_bug = None         # the bug whose diagnosis is on screen
         self.current_history_id = None
+        self.refresh_file_list()
         root.after(50, self._process_ui_updates)
         root.mainloop()
 
@@ -247,18 +256,29 @@ class AppWindow:
         new_paths = [p for p in paths if p not in self.attached_file]
         if new_paths:
             self.attached_file.extend(new_paths)
-            self.text_file_name.config(state="normal")
-            self.text_file_name.insert('end', ''.join(f"{p}\n" for p in new_paths))
-            self.text_file_name.see('end')
-            self.text_file_name.config(state="disabled")
+            self.refresh_file_list()
+            self.list_files.see('end')
 
             print(self.attached_file)
 
+    def remove_selected_files(self):
+        selected = set(self.list_files.curselection())
+        self.attached_file = [p for i, p in enumerate(self.attached_file) if i not in selected]
+        self.refresh_file_list()
+
     def clear_files(self):
         self.attached_file = []
-        self.text_file_name.config(state="normal")
-        self.text_file_name.delete('1.0', 'end')
-        self.text_file_name.config(state="disabled")
+        self.refresh_file_list()
+
+    def refresh_file_list(self):
+        # Names are shown the same way they're sent to the AI.
+        self.list_files.delete(0, 'end')
+        for name in relative_names(self.attached_file):
+            self.list_files.insert('end', name)
+        count = len(self.attached_file)
+        self.label_file_count.config(
+            text=f"{count} file{'s' if count != 1 else ''} attached" if count else "No files attached"
+        )
 
     # sprint 3
     def update_history(self, bug_id: str, description: str, ai_response: str, decision: str = ""):
