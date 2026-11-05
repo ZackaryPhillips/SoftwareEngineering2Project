@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 from queue import Empty, Queue
 from threading import Thread
-from api import post_bug, get_AI_response
+from api import post_bug, get_AI_response, post_decision
 from lib.model import Bug_Report
 
 class AppWindow:
@@ -33,6 +33,16 @@ class AppWindow:
         self.text_status_description = tk.Text(ai_status_frame, width=100, height=2,
                                            state="disabled", wrap="word")
         self.text_status_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+
+        # Enabled once a diagnosis is shown; the developer makes the final call on the fix.
+        decision_frame = tk.Frame(ai_response_frame)
+        decision_frame.grid(row=2, column=0, pady=5)
+        self.button_accept = tk.Button(decision_frame, text="Accept fix", state="disabled",
+                                       command=lambda: self.decide("accept"))
+        self.button_accept.pack(side="left", padx=5)
+        self.button_reject = tk.Button(decision_frame, text="Reject fix", state="disabled",
+                                       command=lambda: self.decide("reject"))
+        self.button_reject.pack(side="left", padx=5)
 
         # -- AI response history (read-only) ---
         ai_history_frame = tk.LabelFrame(main_frame, text="AI History")
@@ -67,6 +77,8 @@ class AppWindow:
         self.ui_updates = Queue()
         self.history_entries = {}
         self.submission_count = 0
+        self.current_bug = None         # the bug whose diagnosis is on screen
+        self.current_history_id = None
         root.after(50, self._process_ui_updates)
         root.mainloop()
 
@@ -121,6 +133,28 @@ class AppWindow:
             lambda: self.finish_submission(the_bug, description, history_id)
         )
 
+    def decide(self, decision: str):
+        the_bug, history_id = self.current_bug, self.current_history_id
+        self.set_decision_buttons("disabled")
+        self.set_status("Recording your decision...")
+        Thread(
+            target=self._process_decision,
+            args=(the_bug, history_id, decision),
+            daemon=True,
+        ).start()
+
+    def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+        try:
+            post_decision(the_bug.get_bug_id(), decision)
+        except Exception as e:
+            self.ui_updates.put(
+                lambda error=e: self.finish_failed_decision(the_bug, error)
+            )
+            return
+        self.ui_updates.put(
+            lambda: self.finish_decision(the_bug, history_id, decision)
+        )
+
     # ---------------- helpers ----------------
 
     def _process_ui_updates(self):
@@ -172,7 +206,27 @@ class AppWindow:
             self.entry_bug_description.delete('1.0', 'end')
         if self.attached_file == the_bug.get_files():
             self.clear_files()
-        self.set_status("AI response successful!")
+        self.current_bug, self.current_history_id = the_bug, history_id
+        self.set_decision_buttons("normal")
+        self.set_status("AI response successful! Review the suggested fix, then accept or reject it.")
+
+    def finish_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+        the_bug.set_decision(decision)
+        label = "Accepted" if decision == "accept" else "Rejected"
+        self.update_history(history_id, the_bug.get_bug_description(),
+                            the_bug.get_ai_response(), decision=label)
+        self.set_status(f"Suggested fix {label.lower()}.")
+
+    def finish_failed_decision(self, the_bug: Bug_Report, error: Exception):
+        # Let the user retry, unless a newer diagnosis has replaced this one on screen.
+        if the_bug is self.current_bug:
+            self.set_decision_buttons("normal")
+        self.set_status("Your decision could not be saved. Please try again.")
+        messagebox.showerror("Decision not saved", f"Request failed: {error}")
+
+    def set_decision_buttons(self, state: str):
+        self.button_accept.config(state=state)
+        self.button_reject.config(state=state)
 
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
@@ -207,10 +261,11 @@ class AppWindow:
         self.text_file_name.config(state="disabled")
 
     # sprint 3
-    def update_history(self, bug_id: str, description: str, ai_response: str):
+    def update_history(self, bug_id: str, description: str, ai_response: str, decision: str = ""):
         self.history_entries[bug_id] = (
             f"Bug Description:\n{description}\n\n"
             f"AI Response:\n{ai_response}\n\n"
+            + (f"Decision: {decision}\n\n" if decision else "")
         )
         self.text_ai_history.config(state="normal")
         self.text_ai_history.delete('1.0', 'end')
