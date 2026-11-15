@@ -4,6 +4,7 @@ from queue import Empty, Queue
 from threading import Thread
 from api import post_bug, get_AI_response, post_decision, relative_names
 from lib.model import Bug_Report
+from TestCaseWindow import TestCaseWindow
 
 class AppWindow:
     """GUI for a debugging assistant: describe a bug, get an AI diagnosis."""
@@ -43,6 +44,11 @@ class AppWindow:
         self.button_reject = tk.Button(decision_frame, text="Reject fix", state="disabled",
                                        command=lambda: self.decide("reject"))
         self.button_reject.pack(side="left", padx=5)
+
+        # sprint 4
+        self.button_test_case = tk.Button(decision_frame, text="Request Test Case", state="disabled",
+                                       command=lambda: self.show_test_case("here is a test case to help you test your application"))
+        self.button_test_case.pack(side="left", padx=5)
 
         # -- AI response history (read-only) ---
         ai_history_frame = tk.LabelFrame(main_frame, text="AI History")
@@ -237,6 +243,9 @@ class AppWindow:
         self.button_accept.config(state=state)
         self.button_reject.config(state=state)
 
+        # sprint 4
+        self.button_test_case.config(state=state)
+
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
 
@@ -301,4 +310,7 @@ class AppWindow:
         self.text_status_description.see('end')
         self.text_status_description.config(state="disabled")
 
-    
+    # sprint 4
+    def show_test_case(self, test_case: str):
+
+        test_case_window = TestCaseWindow(test_case)
