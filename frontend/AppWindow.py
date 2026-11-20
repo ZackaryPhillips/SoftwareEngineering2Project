@@ -66,6 +66,9 @@ class AppWindow:
         self.button_reject = tk.Button(decision_frame, text="Reject fix", state="disabled",
                                        command=lambda: self.decide("reject"))
         self.button_reject.pack(side="left", padx=5)
+        self.button_modify = tk.Button(decision_frame, text="Modify fix", state="disabled",
+                                       command=self.open_modify_dialog)
+        self.button_modify.pack(side="left", padx=5)
 
         # sprint 4
         self.button_test_case = tk.Button(decision_frame, text="Request Test Case", state="disabled",
@@ -217,30 +220,84 @@ class AppWindow:
             lambda: self.finish_submission(the_bug, description, history_id)
         )
 
-    def decide(self, decision: str):
+    def decide(self, decision: str, edited_fix: list | None = None):
         the_bug, history_id = self.current_bug, self.current_history_id
         self.set_decision_buttons("disabled")
         self.set_status("Recording your decision...")
         Thread(
             target=self._process_decision,
-            args=(the_bug, history_id, decision),
+            args=(the_bug, history_id, decision, edited_fix),
             daemon=True,
         ).start()
 
-    def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+    def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str,
+                          edited_fix: list | None = None):
         try:
             bug_id = the_bug.get_bug_id()
             if bug_id is None:
                 raise RuntimeError("The bug report has not been submitted.")
-            post_decision(bug_id, decision)
+            post_decision(bug_id, decision, edited_fix)
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_decision(the_bug, error)
             )
             return
         self.ui_updates.put(
-            lambda: self.finish_decision(the_bug, history_id, decision)
+            lambda: self.finish_decision(the_bug, history_id, decision, edited_fix)
         )
+
+    def open_modify_dialog(self):
+        """Let the user edit the AI's replacement code, then save it as a "modify" decision."""
+        fixes = self.current_bug.get_proposed_fix()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Modify suggested fix")
+        dialog.transient(self.root)
+        dialog.grab_set()   # keep the main window locked while editing
+        tk.Label(dialog, anchor="w", justify="left",
+                 text="Edit the replacement code below. The original is shown for reference.").pack(
+            fill="x", padx=10, pady=(10, 0))
+
+        editors = []
+        for fix in fixes:
+            original = fix.get("original", "").rstrip()
+            replacement = fix.get("replacement", "").rstrip()
+            height = max(3, min(10, max(original.count("\n"), replacement.count("\n")) + 2))
+            frame = tk.LabelFrame(dialog, text=fix.get("file", "?"))
+            frame.pack(fill="both", expand=True, padx=10, pady=5)
+            tk.Label(frame, text="Original", fg="#a1260d").pack(anchor="w", padx=5)
+            text_original = tk.Text(frame, width=90, height=height, font="TkFixedFont",
+                                    background="#fdecea", wrap="none")
+            text_original.insert("1.0", original)
+            text_original.config(state="disabled")
+            text_original.pack(fill="x", padx=5)
+            tk.Label(frame, text="Replacement (edit this)", fg="#1e6b34").pack(anchor="w", padx=5, pady=(5, 0))
+            text_replacement = tk.Text(frame, width=90, height=height, font="TkFixedFont",
+                                       background="#e6f4ea", wrap="none", undo=True)
+            text_replacement.insert("1.0", replacement)
+            text_replacement.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+            editors.append((fix, text_replacement))
+
+        def save():
+            edited_fix = [
+                {"file": fix.get("file", ""), "original": fix.get("original", ""),
+                 "replacement": editor.get("1.0", "end-1c")}
+                for fix, editor in editors
+            ]
+            if all(e["replacement"].rstrip() == f.get("replacement", "").rstrip()
+                   for e, (f, _) in zip(edited_fix, editors)):
+                messagebox.showinfo("No changes",
+                                    "You haven't changed the fix. Edit the replacement, "
+                                    "or close this window and use Accept fix.", parent=dialog)
+                return
+            dialog.destroy()
+            self.decide("modify", edited_fix)
+
+        buttons = tk.Frame(dialog)
+        buttons.pack(pady=10)
+        tk.Button(buttons, text="Save modified fix", command=save).pack(side="left", padx=5)
+        tk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=5)
+        self.modify_dialog, self.modify_editors, self.modify_save = dialog, editors, save
+        editors[0][1].focus_set()
 
     # ---------------- helpers ----------------
 
@@ -297,13 +354,27 @@ class AppWindow:
             self.clear_files()
         self.current_bug, self.current_history_id = the_bug, history_id
         self.set_decision_buttons("normal")
-        self.set_status("AI response successful! Review the suggested fix, then accept or reject it.")
+        # sprint 4: test cases stay available after the user decides on the fix
+        self.button_test_case.config(state="normal")
+        if the_bug.get_proposed_fix():
+            self.set_status("AI response successful! Review the suggested fix, then accept, modify or reject it.")
+        else:
+            self.set_status("AI response received, but there is no suggested fix to accept.")
 
-    def finish_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+    def finish_decision(self, the_bug: Bug_Report, history_id: str, decision: str,
+                        edited_fix: list | None = None):
         the_bug.set_decision(decision)
-        label = "Accepted" if decision == "accept" else "Rejected"
+        label = {"accept": "Accepted", "reject": "Rejected", "modify": "Modified"}[decision]
+        history_decision = label
+        if edited_fix:
+            the_bug.set_edited_fix(edited_fix)
+            history_decision += "".join(
+                f"\n\nYour fix for {fix['file']}:\n{fix['replacement']}" for fix in edited_fix
+            )
+            if the_bug is self.current_bug:
+                self.load_AI_response(the_bug)   # show the user's version
         self.update_history(history_id, the_bug.get_bug_description(),
-                            the_bug.get_ai_response(), decision=label)
+                            the_bug.get_ai_response(), decision=history_decision)
         self.set_status(f"Suggested fix {label.lower()}.")
 
     def finish_failed_decision(self, the_bug: Bug_Report, error: Exception):
@@ -314,11 +385,12 @@ class AppWindow:
         messagebox.showerror("Decision not saved", f"Request failed: {error}")
 
     def set_decision_buttons(self, state: Literal["normal", "disabled"]):
-        self.button_accept.config(state=state)
+        # Accept and Modify need a suggested fix; Reject is always available.
+        has_fix = bool(self.current_bug and self.current_bug.get_proposed_fix())
+        fix_state = state if has_fix else "disabled"
+        self.button_accept.config(state=fix_state)
+        self.button_modify.config(state=fix_state)
         self.button_reject.config(state=state)
-
-        # sprint 4
-        self.button_test_case.config(state=state)
 
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
@@ -334,13 +406,16 @@ class AppWindow:
             if diagnosis:
                 text.insert('end', "\nThe AI's reply wasn't in the expected format, "
                                    "so no suggested fix can be shown.\n", "muted")
+        elif the_bug.get_edited_fix():
+            self._insert_diagnosis(dict(diagnosis, proposed_fix=the_bug.get_edited_fix()),
+                                   fix_heading="Your modified fix")
         else:
             self._insert_diagnosis(diagnosis)
 
         text.see('1.0')
         text.config(state="disabled")
 
-    def _insert_diagnosis(self, d: dict):
+    def _insert_diagnosis(self, d: dict, fix_heading: str = "Suggested fix"):
         text = self.text_ai_description
         text.insert('end', "Summary\n", "heading")
         text.insert('end', f"{d.get('summary', '')}\n")
@@ -361,7 +436,7 @@ class AppWindow:
                 text.insert('end', f"• {where}: {loc.get('reason', '')}\n")
 
         fixes = d.get("proposed_fix", [])
-        text.insert('end', "Suggested fix\n", "heading")
+        text.insert('end', f"{fix_heading}\n", "heading")
         if not fixes:
             text.insert('end', "The AI didn't suggest a code change.\n", "muted")
         for fix in fixes:

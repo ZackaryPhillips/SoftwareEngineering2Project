@@ -73,8 +73,14 @@ def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 33
         time.sleep(poll_interval)
     raise TimeoutError("AI response timed out")
 
-def post_decision(bug_id: str, decision: str):
-    """Record whether the user accepted or rejected the AI's suggested fix."""
+def post_decision(bug_id: str, decision: str, edited_fix: list | None = None):
+    """Record whether the user accepted, rejected or modified the AI's suggested fix.
+
+    For "modify", edited_fix is the user's version: [{file, original, replacement}].
+    """
     print('post_decision() method invoked')
-    resp = requests.post(f"{API_BASE}/bugs/{bug_id}/decision", json={"decision": decision}, timeout=10)
+    payload = {"decision": decision}
+    if edited_fix is not None:
+        payload["edited_fix"] = edited_fix
+    resp = requests.post(f"{API_BASE}/bugs/{bug_id}/decision", json=payload, timeout=10)
     _raise_for_status(resp)
