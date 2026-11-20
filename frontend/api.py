@@ -36,9 +36,10 @@ def _raise_for_status(resp):
         return
     try:
         message = resp.json()["error"]
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):
         resp.raise_for_status()
-    raise RuntimeError(message)
+    else:
+        raise RuntimeError(message)
 
 def post_bug(the_bug) -> str:
     """Send the bug report (description, error output, attached files), return its bug id."""

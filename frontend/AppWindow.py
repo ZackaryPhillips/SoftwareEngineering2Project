@@ -1,9 +1,13 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from queue import Empty, Queue
+import sqlite3
 from threading import Thread
+from typing import Literal
+import uuid
 from api import post_bug, get_AI_response, post_decision, relative_names
 from lib.model import Bug_Report
+from history_store import HistoryStore
 from TestCaseWindow import TestCaseWindow
 
 class AppWindow:
@@ -13,6 +17,7 @@ class AppWindow:
         root = tk.Tk()
         root.title("Debugging Application")
         root.geometry("1400x900")
+        self.save_history_var = tk.BooleanVar(value=False)
 
         main_frame = tk.Frame(root)
         main_frame.pack(fill="both", expand=True)
@@ -50,12 +55,28 @@ class AppWindow:
                                        command=lambda: self.show_test_case("here is a test case to help you test your application"))
         self.button_test_case.pack(side="left", padx=5)
 
-        # -- AI response history (read-only) ---
+        # -- AI response history ---
         ai_history_frame = tk.LabelFrame(main_frame, text="AI History")
         ai_history_frame.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
-        self.text_ai_history = tk.Text(ai_history_frame, width=60, height= 40, 
-                                       state="disabled", wrap="word")
-        self.text_ai_history.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        ai_history_frame.grid_rowconfigure(1, weight=1)
+        ai_history_frame.grid_rowconfigure(2, weight=2)
+        ai_history_frame.grid_columnconfigure(0, weight=1)
+        tk.Checkbutton(
+            ai_history_frame,
+            text="Save new AI history locally",
+            variable=self.save_history_var,
+        ).grid(row=0, column=0, columnspan=2, padx=5, sticky="w")
+        self.list_ai_history = tk.Listbox(ai_history_frame, width=60, height=10,
+                                          activestyle="dotbox")
+        self.list_ai_history.grid(row=1, column=0, padx=(5, 0), pady=5, sticky="nsew")
+        history_scrollbar = tk.Scrollbar(ai_history_frame, command=self.list_ai_history.yview)
+        history_scrollbar.grid(row=1, column=1, padx=(0, 5), pady=5, sticky="ns")
+        self.list_ai_history.config(yscrollcommand=history_scrollbar.set)
+        self.list_ai_history.bind("<<ListboxSelect>>", self.show_selected_history)
+        self.text_ai_history_detail = tk.Text(ai_history_frame, width=60, height=20,
+                                              state="disabled", wrap="word")
+        self.text_ai_history_detail.grid(row=2, column=0, columnspan=2, padx=5, pady=5,
+                                         sticky="nsew")
 
         # --- Bug input area ---
         bug_description_frame = tk.LabelFrame(main_frame, text="Bug Description")
@@ -89,8 +110,27 @@ class AppWindow:
         self.attached_file = []
         self.root = root
         self.ui_updates = Queue()
+        self.history_store = HistoryStore()
         self.history_entries = {}
-        self.submission_count = 0
+        self.history_order = []
+        self.history_save_flags = {}
+        try:
+            for entry in self.history_store.load():
+                history_id = entry["id"]
+                self.history_entries[history_id] = {
+                    "description": entry["description"],
+                    "ai_response": entry["ai_response"],
+                    "decision": entry["decision"],
+                }
+                self.history_order.append(history_id)
+                self.history_save_flags[history_id] = True
+        except (OSError, sqlite3.Error) as error:
+            messagebox.showerror(
+                "History could not be loaded",
+                f"Saved history could not be read: {error}",
+                parent=root,
+            )
+        self._refresh_history_list()
         self.current_bug = None         # the bug whose diagnosis is on screen
         self.current_history_id = None
         self.refresh_file_list()
@@ -108,8 +148,8 @@ class AppWindow:
             messagebox.showwarning("Empty", "Please describe the bug first.")
             return
 
-        self.submission_count += 1
-        history_id = f"submission-{self.submission_count}"
+        history_id = uuid.uuid4().hex
+        self.history_save_flags[history_id] = self.save_history_var.get()
         description = the_bug.get_bug_description()
         self.update_history(history_id, description, "Submitting...")
         self.set_status("Submitting bug...")
@@ -123,7 +163,8 @@ class AppWindow:
 
     def _process_bug(self, description: str, the_bug: Bug_Report, history_id: str):
         try:
-            the_bug.set_bug_id(post_bug(the_bug))
+            bug_id = post_bug(the_bug)
+            the_bug.set_bug_id(bug_id)
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_submission(
@@ -136,7 +177,7 @@ class AppWindow:
             lambda: self.mark_diagnosis_pending(history_id, description)
         )
         try:
-            the_bug.set_ai_response(get_AI_response(the_bug.get_bug_id()))
+            the_bug.set_ai_response(get_AI_response(bug_id))
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_diagnosis(
@@ -160,7 +201,10 @@ class AppWindow:
 
     def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
         try:
-            post_decision(the_bug.get_bug_id(), decision)
+            bug_id = the_bug.get_bug_id()
+            if bug_id is None:
+                raise RuntimeError("The bug report has not been submitted.")
+            post_decision(bug_id, decision)
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_decision(the_bug, error)
@@ -239,7 +283,7 @@ class AppWindow:
         self.set_status("Your decision could not be saved. Please try again.")
         messagebox.showerror("Decision not saved", f"Request failed: {error}")
 
-    def set_decision_buttons(self, state: str):
+    def set_decision_buttons(self, state: Literal["normal", "disabled"]):
         self.button_accept.config(state=state)
         self.button_reject.config(state=state)
 
@@ -289,19 +333,72 @@ class AppWindow:
             text=f"{count} file{'s' if count != 1 else ''} attached" if count else "No files attached"
         )
 
-    # sprint 3
     def update_history(self, bug_id: str, description: str, ai_response: str, decision: str = ""):
-        self.history_entries[bug_id] = (
-            f"Bug Description:\n{description}\n\n"
-            f"AI Response:\n{ai_response}\n\n"
-            + (f"Decision: {decision}\n\n" if decision else "")
+        is_new = bug_id not in self.history_entries
+        if is_new:
+            self.history_order.append(bug_id)
+        self.history_entries[bug_id] = {
+            "description": description,
+            "ai_response": ai_response,
+            "decision": decision,
+        }
+
+        selection = self.list_ai_history.curselection()
+        selected_id = self.history_order[selection[0]] if selection else None
+        if is_new or selected_id is None:
+            selected_id = bug_id
+
+        if self.history_save_flags.get(bug_id, False):
+            try:
+                self.history_store.save(bug_id, description, ai_response, decision)
+            except (OSError, sqlite3.Error) as error:
+                self.history_save_flags[bug_id] = False
+                self.save_history_var.set(False)
+                messagebox.showerror(
+                    "History could not be saved",
+                    f"This report will remain available until the app closes, "
+                    f"but could not be saved locally: {error}",
+                    parent=self.root,
+                )
+
+        self._refresh_history_list(selected_id)
+
+    def _refresh_history_list(self, selected_id: str | None = None):
+        self.list_ai_history.delete(0, "end")
+        for index, history_id in enumerate(self.history_order, start=1):
+            preview = self.history_entries[history_id]["description"].replace("\n", " ").strip()
+            if len(preview) > 55:
+                preview = preview[:52] + "..."
+            self.list_ai_history.insert("end", f"Report {index}: {preview}")
+
+        if not self.history_order:
+            return
+        if selected_id not in self.history_entries:
+            selected_id = self.history_order[-1]
+        selected_index = self.history_order.index(selected_id)
+        self.list_ai_history.selection_set(selected_index)
+        self.list_ai_history.activate(selected_index)
+        self.list_ai_history.see(selected_index)
+        self.show_selected_history()
+
+    def show_selected_history(self, _event=None):
+        selection = self.list_ai_history.curselection()
+        if not selection:
+            return
+
+        history_id = self.history_order[selection[0]]
+        entry = self.history_entries[history_id]
+        details = (
+            f"Bug Description:\n{entry['description']}\n\n"
+            f"AI Response:\n{entry['ai_response']}\n"
         )
-        self.text_ai_history.config(state="normal")
-        self.text_ai_history.delete('1.0', 'end')
-        separator = "─" * 50 + "\n\n"
-        self.text_ai_history.insert('end', separator.join(self.history_entries.values()))
-        self.text_ai_history.see('end')
-        self.text_ai_history.config(state="disabled")
+        if entry["decision"]:
+            details += f"\nDecision: {entry['decision']}\n"
+
+        self.text_ai_history_detail.config(state="normal")
+        self.text_ai_history_detail.delete("1.0", "end")
+        self.text_ai_history_detail.insert("end", details)
+        self.text_ai_history_detail.config(state="disabled")
 
     def set_status(self, status_message: str):
         self.text_status_description.config(state="normal")
