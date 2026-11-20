@@ -81,9 +81,17 @@ class AppWindow:
         # --- Bug input area ---
         bug_description_frame = tk.LabelFrame(main_frame, text="Bug Description")
         bug_description_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
-        self.entry_bug_description = tk.Text(bug_description_frame, width=100, height=10,
+        tk.Label(bug_description_frame, text="What's wrong?", anchor="w").grid(
+            row=0, column=0, padx=5, sticky="w")
+        tk.Label(bug_description_frame, text="Error output / stack trace (optional)", anchor="w").grid(
+            row=0, column=1, padx=5, sticky="w")
+        self.entry_bug_description = tk.Text(bug_description_frame, width=50, height=9,
                                              wrap="word")
-        self.entry_bug_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")        
+        self.entry_bug_description.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="nsew")
+        # Fixed-width font so tracebacks keep their indentation.
+        self.entry_error_output = tk.Text(bug_description_frame, width=50, height=9,
+                                          wrap="word", font="TkFixedFont")
+        self.entry_error_output.grid(row=1, column=1, padx=5, pady=(0, 5), sticky="nsew")
 
         file_frame = tk.LabelFrame(main_frame, text="File Information")
         file_frame.grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
@@ -104,7 +112,7 @@ class AppWindow:
         tk.Button(file_button_frame, text="Clear files", command=self.clear_files).pack(side="left", padx=5)
 
         button_frame = tk.Frame(bug_description_frame)
-        button_frame.grid(row=1, column=0, pady=5)        
+        button_frame.grid(row=2, column=0, columnspan=2, pady=5)
         tk.Button(button_frame, text="Submit bug", command=self.submit_bug).pack(side="left", padx=5)
 
         self.attached_file = []
@@ -141,9 +149,10 @@ class AppWindow:
 
     def submit_bug(self):
 
-        the_bug = Bug_Report('', '', self.attached_file)        
+        the_bug = Bug_Report('', '', self.attached_file)
 
         the_bug.set_bug_description(self.entry_bug_description.get('1.0', 'end').strip())
+        the_bug.set_error_output(self.entry_error_output.get('1.0', 'end').strip())
         if not the_bug.get_bug_description():
             messagebox.showwarning("Empty", "Please describe the bug first.")
             return
@@ -263,6 +272,8 @@ class AppWindow:
         self.load_AI_response(the_bug)
         if self.entry_bug_description.get('1.0', 'end').strip() == description:
             self.entry_bug_description.delete('1.0', 'end')
+        if self.entry_error_output.get('1.0', 'end').strip() == the_bug.get_error_output():
+            self.entry_error_output.delete('1.0', 'end')
         if self.attached_file == the_bug.get_files():
             self.clear_files()
         self.current_bug, self.current_history_id = the_bug, history_id
