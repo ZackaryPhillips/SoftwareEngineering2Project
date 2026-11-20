@@ -31,7 +31,24 @@ class AppWindow:
 
         self.text_ai_description = tk.Text(ai_response_frame, width=100, height=30,
                                            state="disabled", wrap="word")
-        self.text_ai_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        self.text_ai_description.grid(row=0, column=0, padx=(5, 0), pady=5, sticky="nsew")
+        ai_scrollbar = tk.Scrollbar(ai_response_frame, command=self.text_ai_description.yview)
+        ai_scrollbar.grid(row=0, column=1, padx=(0, 5), pady=5, sticky="ns")
+        self.text_ai_description.config(yscrollcommand=ai_scrollbar.set)
+        # Styles for the diagnosis: original code in red, the AI's replacement in green.
+        self.text_ai_description.tag_configure("heading", font=("TkDefaultFont", 10, "bold"),
+                                               spacing1=8, spacing3=2)
+        self.text_ai_description.tag_configure("file", font=("TkDefaultFont", 10, "bold"),
+                                               spacing1=6)
+        self.text_ai_description.tag_configure("muted", foreground="#555555")
+        self.text_ai_description.tag_configure("label_original", foreground="#a1260d",
+                                               font=("TkDefaultFont", 9, "bold"), lmargin1=10)
+        self.text_ai_description.tag_configure("label_replacement", foreground="#1e6b34",
+                                               font=("TkDefaultFont", 9, "bold"), lmargin1=10)
+        self.text_ai_description.tag_configure("code_original", font="TkFixedFont",
+                                               background="#fdecea", lmargin1=10, lmargin2=10)
+        self.text_ai_description.tag_configure("code_replacement", font="TkFixedFont",
+                                               background="#e6f4ea", lmargin1=10, lmargin2=10)
 
         ai_status_frame = tk.LabelFrame(ai_response_frame, text="Status")
         ai_status_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
@@ -49,6 +66,9 @@ class AppWindow:
         self.button_reject = tk.Button(decision_frame, text="Reject fix", state="disabled",
                                        command=lambda: self.decide("reject"))
         self.button_reject.pack(side="left", padx=5)
+        self.button_modify = tk.Button(decision_frame, text="Modify fix", state="disabled",
+                                       command=self.open_modify_dialog)
+        self.button_modify.pack(side="left", padx=5)
 
         # sprint 4
         self.button_test_case = tk.Button(decision_frame, text="Request Test Case", state="disabled",
@@ -81,9 +101,17 @@ class AppWindow:
         # --- Bug input area ---
         bug_description_frame = tk.LabelFrame(main_frame, text="Bug Description")
         bug_description_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
-        self.entry_bug_description = tk.Text(bug_description_frame, width=100, height=10,
+        tk.Label(bug_description_frame, text="What's wrong?", anchor="w").grid(
+            row=0, column=0, padx=5, sticky="w")
+        tk.Label(bug_description_frame, text="Error output / stack trace (optional)", anchor="w").grid(
+            row=0, column=1, padx=5, sticky="w")
+        self.entry_bug_description = tk.Text(bug_description_frame, width=50, height=9,
                                              wrap="word")
-        self.entry_bug_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")        
+        self.entry_bug_description.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="nsew")
+        # Fixed-width font so tracebacks keep their indentation.
+        self.entry_error_output = tk.Text(bug_description_frame, width=50, height=9,
+                                          wrap="word", font="TkFixedFont")
+        self.entry_error_output.grid(row=1, column=1, padx=5, pady=(0, 5), sticky="nsew")
 
         file_frame = tk.LabelFrame(main_frame, text="File Information")
         file_frame.grid(row=1, column=1, padx=5, pady=5, sticky="nsew")
@@ -104,7 +132,7 @@ class AppWindow:
         tk.Button(file_button_frame, text="Clear files", command=self.clear_files).pack(side="left", padx=5)
 
         button_frame = tk.Frame(bug_description_frame)
-        button_frame.grid(row=1, column=0, pady=5)        
+        button_frame.grid(row=2, column=0, columnspan=2, pady=5)
         tk.Button(button_frame, text="Submit bug", command=self.submit_bug).pack(side="left", padx=5)
 
         self.attached_file = []
@@ -141,9 +169,10 @@ class AppWindow:
 
     def submit_bug(self):
 
-        the_bug = Bug_Report('', '', self.attached_file)        
+        the_bug = Bug_Report('', '', self.attached_file)
 
         the_bug.set_bug_description(self.entry_bug_description.get('1.0', 'end').strip())
+        the_bug.set_error_output(self.entry_error_output.get('1.0', 'end').strip())
         if not the_bug.get_bug_description():
             messagebox.showwarning("Empty", "Please describe the bug first.")
             return
@@ -177,7 +206,9 @@ class AppWindow:
             lambda: self.mark_diagnosis_pending(history_id, description)
         )
         try:
-            the_bug.set_ai_response(get_AI_response(bug_id))
+            response = get_AI_response(bug_id)
+            the_bug.set_ai_response(response["answer"])
+            the_bug.set_diagnosis(response["diagnosis"])
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_diagnosis(
@@ -189,30 +220,84 @@ class AppWindow:
             lambda: self.finish_submission(the_bug, description, history_id)
         )
 
-    def decide(self, decision: str):
+    def decide(self, decision: str, edited_fix: list | None = None):
         the_bug, history_id = self.current_bug, self.current_history_id
         self.set_decision_buttons("disabled")
         self.set_status("Recording your decision...")
         Thread(
             target=self._process_decision,
-            args=(the_bug, history_id, decision),
+            args=(the_bug, history_id, decision, edited_fix),
             daemon=True,
         ).start()
 
-    def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+    def _process_decision(self, the_bug: Bug_Report, history_id: str, decision: str,
+                          edited_fix: list | None = None):
         try:
             bug_id = the_bug.get_bug_id()
             if bug_id is None:
                 raise RuntimeError("The bug report has not been submitted.")
-            post_decision(bug_id, decision)
+            post_decision(bug_id, decision, edited_fix)
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_decision(the_bug, error)
             )
             return
         self.ui_updates.put(
-            lambda: self.finish_decision(the_bug, history_id, decision)
+            lambda: self.finish_decision(the_bug, history_id, decision, edited_fix)
         )
+
+    def open_modify_dialog(self):
+        """Let the user edit the AI's replacement code, then save it as a "modify" decision."""
+        fixes = self.current_bug.get_proposed_fix()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Modify suggested fix")
+        dialog.transient(self.root)
+        dialog.grab_set()   # keep the main window locked while editing
+        tk.Label(dialog, anchor="w", justify="left",
+                 text="Edit the replacement code below. The original is shown for reference.").pack(
+            fill="x", padx=10, pady=(10, 0))
+
+        editors = []
+        for fix in fixes:
+            original = fix.get("original", "").rstrip()
+            replacement = fix.get("replacement", "").rstrip()
+            height = max(3, min(10, max(original.count("\n"), replacement.count("\n")) + 2))
+            frame = tk.LabelFrame(dialog, text=fix.get("file", "?"))
+            frame.pack(fill="both", expand=True, padx=10, pady=5)
+            tk.Label(frame, text="Original", fg="#a1260d").pack(anchor="w", padx=5)
+            text_original = tk.Text(frame, width=90, height=height, font="TkFixedFont",
+                                    background="#fdecea", wrap="none")
+            text_original.insert("1.0", original)
+            text_original.config(state="disabled")
+            text_original.pack(fill="x", padx=5)
+            tk.Label(frame, text="Replacement (edit this)", fg="#1e6b34").pack(anchor="w", padx=5, pady=(5, 0))
+            text_replacement = tk.Text(frame, width=90, height=height, font="TkFixedFont",
+                                       background="#e6f4ea", wrap="none", undo=True)
+            text_replacement.insert("1.0", replacement)
+            text_replacement.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+            editors.append((fix, text_replacement))
+
+        def save():
+            edited_fix = [
+                {"file": fix.get("file", ""), "original": fix.get("original", ""),
+                 "replacement": editor.get("1.0", "end-1c")}
+                for fix, editor in editors
+            ]
+            if all(e["replacement"].rstrip() == f.get("replacement", "").rstrip()
+                   for e, (f, _) in zip(edited_fix, editors)):
+                messagebox.showinfo("No changes",
+                                    "You haven't changed the fix. Edit the replacement, "
+                                    "or close this window and use Accept fix.", parent=dialog)
+                return
+            dialog.destroy()
+            self.decide("modify", edited_fix)
+
+        buttons = tk.Frame(dialog)
+        buttons.pack(pady=10)
+        tk.Button(buttons, text="Save modified fix", command=save).pack(side="left", padx=5)
+        tk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=5)
+        self.modify_dialog, self.modify_editors, self.modify_save = dialog, editors, save
+        editors[0][1].focus_set()
 
     # ---------------- helpers ----------------
 
@@ -263,17 +348,33 @@ class AppWindow:
         self.load_AI_response(the_bug)
         if self.entry_bug_description.get('1.0', 'end').strip() == description:
             self.entry_bug_description.delete('1.0', 'end')
+        if self.entry_error_output.get('1.0', 'end').strip() == the_bug.get_error_output():
+            self.entry_error_output.delete('1.0', 'end')
         if self.attached_file == the_bug.get_files():
             self.clear_files()
         self.current_bug, self.current_history_id = the_bug, history_id
         self.set_decision_buttons("normal")
-        self.set_status("AI response successful! Review the suggested fix, then accept or reject it.")
+        # sprint 4: test cases stay available after the user decides on the fix
+        self.button_test_case.config(state="normal")
+        if the_bug.get_proposed_fix():
+            self.set_status("AI response successful! Review the suggested fix, then accept, modify or reject it.")
+        else:
+            self.set_status("AI response received, but there is no suggested fix to accept.")
 
-    def finish_decision(self, the_bug: Bug_Report, history_id: str, decision: str):
+    def finish_decision(self, the_bug: Bug_Report, history_id: str, decision: str,
+                        edited_fix: list | None = None):
         the_bug.set_decision(decision)
-        label = "Accepted" if decision == "accept" else "Rejected"
+        label = {"accept": "Accepted", "reject": "Rejected", "modify": "Modified"}[decision]
+        history_decision = label
+        if edited_fix:
+            the_bug.set_edited_fix(edited_fix)
+            history_decision += "".join(
+                f"\n\nYour fix for {fix['file']}:\n{fix['replacement']}" for fix in edited_fix
+            )
+            if the_bug is self.current_bug:
+                self.load_AI_response(the_bug)   # show the user's version
         self.update_history(history_id, the_bug.get_bug_description(),
-                            the_bug.get_ai_response(), decision=label)
+                            the_bug.get_ai_response(), decision=history_decision)
         self.set_status(f"Suggested fix {label.lower()}.")
 
     def finish_failed_decision(self, the_bug: Bug_Report, error: Exception):
@@ -284,24 +385,66 @@ class AppWindow:
         messagebox.showerror("Decision not saved", f"Request failed: {error}")
 
     def set_decision_buttons(self, state: Literal["normal", "disabled"]):
-        self.button_accept.config(state=state)
+        # Accept and Modify need a suggested fix; Reject is always available.
+        has_fix = bool(self.current_bug and self.current_bug.get_proposed_fix())
+        fix_state = state if has_fix else "disabled"
+        self.button_accept.config(state=fix_state)
+        self.button_modify.config(state=fix_state)
         self.button_reject.config(state=state)
-
-        # sprint 4
-        self.button_test_case.config(state=state)
 
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
 
-        # sprint 3
-        self.text_ai_description.config(state="normal")
-        self.text_ai_description.delete('1.0', 'end')
-        self.text_ai_description.config(state="disabled")
+        text = self.text_ai_description
+        text.config(state="normal")
+        text.delete('1.0', 'end')
 
-        self.text_ai_description.config(state="normal")
-        self.text_ai_description.insert('end', the_bug.get_ai_response())
-        self.text_ai_description.see('end')
-        self.text_ai_description.config(state="disabled")
+        diagnosis = the_bug.get_diagnosis()
+        if not diagnosis or diagnosis.get("parse_error"):
+            # The AI didn't reply in the expected format: show what it said as-is.
+            text.insert('end', the_bug.get_ai_response())
+            if diagnosis:
+                text.insert('end', "\nThe AI's reply wasn't in the expected format, "
+                                   "so no suggested fix can be shown.\n", "muted")
+        elif the_bug.get_edited_fix():
+            self._insert_diagnosis(dict(diagnosis, proposed_fix=the_bug.get_edited_fix()),
+                                   fix_heading="Your modified fix")
+        else:
+            self._insert_diagnosis(diagnosis)
+
+        text.see('1.0')
+        text.config(state="disabled")
+
+    def _insert_diagnosis(self, d: dict, fix_heading: str = "Suggested fix"):
+        text = self.text_ai_description
+        text.insert('end', "Summary\n", "heading")
+        text.insert('end', f"{d.get('summary', '')}\n")
+        text.insert('end', f"Confidence: {d.get('confidence', 'unknown')}\n", "muted")
+
+        text.insert('end', "Explanation\n", "heading")
+        text.insert('end', f"{d.get('explanation', '')}\n")
+
+        locations = d.get("suspected_locations", [])
+        if locations:
+            text.insert('end', "Where the bug is likely to be\n", "heading")
+            for loc in locations:
+                where = loc.get("file", "?")
+                if loc.get("function"):
+                    where += f" in {loc['function']}()"
+                if loc.get("line"):
+                    where += f", line {loc['line']}"
+                text.insert('end', f"• {where}: {loc.get('reason', '')}\n")
+
+        fixes = d.get("proposed_fix", [])
+        text.insert('end', f"{fix_heading}\n", "heading")
+        if not fixes:
+            text.insert('end', "The AI didn't suggest a code change.\n", "muted")
+        for fix in fixes:
+            text.insert('end', f"{fix.get('file', '?')}\n", "file")
+            text.insert('end', "Original\n", "label_original")
+            text.insert('end', f"{fix.get('original', '').rstrip()}\n", "code_original")
+            text.insert('end', "Replacement\n", "label_replacement")
+            text.insert('end', f"{fix.get('replacement', '').rstrip()}\n", "code_replacement")
 
     def retrieve_file(self):
         print('retrieve_file() method invoked')

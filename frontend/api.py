@@ -54,8 +54,12 @@ def post_bug(the_bug) -> str:
     return resp.json()["bug_id"]
 
 # The timeout is above the backend's slowest provider (Ollama, 300s) so slow models aren't cut off.
-def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 330.0) -> str:
-    """Poll the backend until the AI answer is ready."""
+def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 330.0) -> dict:
+    """Poll the backend until the AI answer is ready.
+
+    Returns {"answer": plain-text diagnosis, "diagnosis": structured diagnosis with
+    summary, explanation, suspected_locations, proposed_fix, confidence, parse_error}.
+    """
     print('get_AI_response() method invoked')
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -63,14 +67,20 @@ def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 33
         resp.raise_for_status()
         data = resp.json()
         if data.get("status") == "done":
-            return data["answer"]
+            return {"answer": data["answer"], "diagnosis": data["diagnosis"]}
         if data.get("status") == "error":
             raise RuntimeError(data.get("error", "The diagnosis could not be completed."))
         time.sleep(poll_interval)
     raise TimeoutError("AI response timed out")
 
-def post_decision(bug_id: str, decision: str):
-    """Record whether the user accepted or rejected the AI's suggested fix."""
+def post_decision(bug_id: str, decision: str, edited_fix: list | None = None):
+    """Record whether the user accepted, rejected or modified the AI's suggested fix.
+
+    For "modify", edited_fix is the user's version: [{file, original, replacement}].
+    """
     print('post_decision() method invoked')
-    resp = requests.post(f"{API_BASE}/bugs/{bug_id}/decision", json={"decision": decision}, timeout=10)
+    payload = {"decision": decision}
+    if edited_fix is not None:
+        payload["edited_fix"] = edited_fix
+    resp = requests.post(f"{API_BASE}/bugs/{bug_id}/decision", json=payload, timeout=10)
     _raise_for_status(resp)
