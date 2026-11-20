@@ -5,7 +5,8 @@ class Bug_Report:
 		self.error_output = error_output	# error message / stack trace from the user
 		self.files = list(files) if files else []	# paths of attached source files
 		self.bug_id = None			# assigned by the backend on submit
-		self.ai_response = ''
+		self.ai_response = ''		# diagnosis as plain text (shown in the history)
+		self.diagnosis = None		# structured diagnosis from the backend, incl. proposed_fix
 		self.decision = None		# 'accept' or 'reject' once the user has reviewed the fix
 
 	def get_error_output(self):
@@ -23,6 +24,12 @@ class Bug_Report:
 	def get_ai_response(self):
 		return self.ai_response
 
+	def get_diagnosis(self):
+		return self.diagnosis
+
+	def get_proposed_fix(self):
+		return self.diagnosis.get('proposed_fix', []) if self.diagnosis else []
+
 	def get_decision(self):
 		return self.decision
 
@@ -37,6 +44,9 @@ class Bug_Report:
 
 	def set_ai_response(self, ai_response):
 		self.ai_response = ai_response
+
+	def set_diagnosis(self, diagnosis):
+		self.diagnosis = diagnosis
 
 	def set_decision(self, decision):
 		self.decision = decision

@@ -31,7 +31,24 @@ class AppWindow:
 
         self.text_ai_description = tk.Text(ai_response_frame, width=100, height=30,
                                            state="disabled", wrap="word")
-        self.text_ai_description.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        self.text_ai_description.grid(row=0, column=0, padx=(5, 0), pady=5, sticky="nsew")
+        ai_scrollbar = tk.Scrollbar(ai_response_frame, command=self.text_ai_description.yview)
+        ai_scrollbar.grid(row=0, column=1, padx=(0, 5), pady=5, sticky="ns")
+        self.text_ai_description.config(yscrollcommand=ai_scrollbar.set)
+        # Styles for the diagnosis: original code in red, the AI's replacement in green.
+        self.text_ai_description.tag_configure("heading", font=("TkDefaultFont", 10, "bold"),
+                                               spacing1=8, spacing3=2)
+        self.text_ai_description.tag_configure("file", font=("TkDefaultFont", 10, "bold"),
+                                               spacing1=6)
+        self.text_ai_description.tag_configure("muted", foreground="#555555")
+        self.text_ai_description.tag_configure("label_original", foreground="#a1260d",
+                                               font=("TkDefaultFont", 9, "bold"), lmargin1=10)
+        self.text_ai_description.tag_configure("label_replacement", foreground="#1e6b34",
+                                               font=("TkDefaultFont", 9, "bold"), lmargin1=10)
+        self.text_ai_description.tag_configure("code_original", font="TkFixedFont",
+                                               background="#fdecea", lmargin1=10, lmargin2=10)
+        self.text_ai_description.tag_configure("code_replacement", font="TkFixedFont",
+                                               background="#e6f4ea", lmargin1=10, lmargin2=10)
 
         ai_status_frame = tk.LabelFrame(ai_response_frame, text="Status")
         ai_status_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
@@ -186,7 +203,9 @@ class AppWindow:
             lambda: self.mark_diagnosis_pending(history_id, description)
         )
         try:
-            the_bug.set_ai_response(get_AI_response(bug_id))
+            response = get_AI_response(bug_id)
+            the_bug.set_ai_response(response["answer"])
+            the_bug.set_diagnosis(response["diagnosis"])
         except Exception as e:
             self.ui_updates.put(
                 lambda error=e: self.finish_failed_diagnosis(
@@ -304,15 +323,53 @@ class AppWindow:
     def load_AI_response(self, the_bug: Bug_Report):
         print('load_AI_response() method invoked')
 
-        # sprint 3
-        self.text_ai_description.config(state="normal")
-        self.text_ai_description.delete('1.0', 'end')
-        self.text_ai_description.config(state="disabled")
+        text = self.text_ai_description
+        text.config(state="normal")
+        text.delete('1.0', 'end')
 
-        self.text_ai_description.config(state="normal")
-        self.text_ai_description.insert('end', the_bug.get_ai_response())
-        self.text_ai_description.see('end')
-        self.text_ai_description.config(state="disabled")
+        diagnosis = the_bug.get_diagnosis()
+        if not diagnosis or diagnosis.get("parse_error"):
+            # The AI didn't reply in the expected format: show what it said as-is.
+            text.insert('end', the_bug.get_ai_response())
+            if diagnosis:
+                text.insert('end', "\nThe AI's reply wasn't in the expected format, "
+                                   "so no suggested fix can be shown.\n", "muted")
+        else:
+            self._insert_diagnosis(diagnosis)
+
+        text.see('1.0')
+        text.config(state="disabled")
+
+    def _insert_diagnosis(self, d: dict):
+        text = self.text_ai_description
+        text.insert('end', "Summary\n", "heading")
+        text.insert('end', f"{d.get('summary', '')}\n")
+        text.insert('end', f"Confidence: {d.get('confidence', 'unknown')}\n", "muted")
+
+        text.insert('end', "Explanation\n", "heading")
+        text.insert('end', f"{d.get('explanation', '')}\n")
+
+        locations = d.get("suspected_locations", [])
+        if locations:
+            text.insert('end', "Where the bug is likely to be\n", "heading")
+            for loc in locations:
+                where = loc.get("file", "?")
+                if loc.get("function"):
+                    where += f" in {loc['function']}()"
+                if loc.get("line"):
+                    where += f", line {loc['line']}"
+                text.insert('end', f"• {where}: {loc.get('reason', '')}\n")
+
+        fixes = d.get("proposed_fix", [])
+        text.insert('end', "Suggested fix\n", "heading")
+        if not fixes:
+            text.insert('end', "The AI didn't suggest a code change.\n", "muted")
+        for fix in fixes:
+            text.insert('end', f"{fix.get('file', '?')}\n", "file")
+            text.insert('end', "Original\n", "label_original")
+            text.insert('end', f"{fix.get('original', '').rstrip()}\n", "code_original")
+            text.insert('end', "Replacement\n", "label_replacement")
+            text.insert('end', f"{fix.get('replacement', '').rstrip()}\n", "code_replacement")
 
     def retrieve_file(self):
         print('retrieve_file() method invoked')

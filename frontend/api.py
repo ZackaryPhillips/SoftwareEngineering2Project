@@ -54,8 +54,12 @@ def post_bug(the_bug) -> str:
     return resp.json()["bug_id"]
 
 # The timeout is above the backend's slowest provider (Ollama, 300s) so slow models aren't cut off.
-def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 330.0) -> str:
-    """Poll the backend until the AI answer is ready."""
+def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 330.0) -> dict:
+    """Poll the backend until the AI answer is ready.
+
+    Returns {"answer": plain-text diagnosis, "diagnosis": structured diagnosis with
+    summary, explanation, suspected_locations, proposed_fix, confidence, parse_error}.
+    """
     print('get_AI_response() method invoked')
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -63,7 +67,7 @@ def get_AI_response(bug_id: str, poll_interval: float = 2.0, timeout: float = 33
         resp.raise_for_status()
         data = resp.json()
         if data.get("status") == "done":
-            return data["answer"]
+            return {"answer": data["answer"], "diagnosis": data["diagnosis"]}
         if data.get("status") == "error":
             raise RuntimeError(data.get("error", "The diagnosis could not be completed."))
         time.sleep(poll_interval)
